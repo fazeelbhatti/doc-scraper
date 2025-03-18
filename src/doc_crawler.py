@@ -2,15 +2,19 @@ import os
 import logging
 import asyncio
 from urllib.parse import urljoin, urlparse
-from typing import Set, Dict
+from typing import Set, Dict, Literal, Optional
 from gpt_helper import GPTHelper
+from gemini_helper import GeminiHelper
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.firefox.service import Service as FirefoxService
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
+#import geckodriver_autoinstaller
 import time
 
 logging.basicConfig(level=logging.INFO)
@@ -21,42 +25,33 @@ class DocCrawler:
     def __init__(
         self,
         base_url: str,
-        output_dir: str = "coinbase_docs",
-        max_pages: int = 50,
-        max_concurrent_pages: int = 3
+        output_dir: str,
+        concurrent_pages: int = 3,
+        model_type: str = "gpt",
+        browser_type: str = "chrome",
+        custom_prompt: Optional[str] = None,
+        max_pages: int = 1000  # Add default max pages limit
     ):
         self.base_url = base_url
         self.base_domain = urlparse(base_url).netloc
         self.output_dir = output_dir
-        self.max_pages = max_pages
-        self.max_concurrent_pages = max_concurrent_pages
+        self.concurrent_pages = concurrent_pages
+        self.model_type = model_type
+        self.browser_type = browser_type
+        self.custom_prompt = custom_prompt
+        self.max_pages = max_pages  # Initialize max_pages
         self.visited_urls: Set[str] = set()
         self.processed_content: Dict[str, str] = {}
-        self.gpt_helper = GPTHelper()
-        self._page_semaphore = asyncio.Semaphore(max_concurrent_pages)
-
-        # Initialize Selenium
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--ignore-certificate-errors")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-web-security")  # Be careful with this in production
-        chrome_options.add_argument("--allow-running-insecure-content")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-        self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
-
-        # Set page load timeout
-        self.driver.set_page_load_timeout(90)
-
+        self.url_queue = asyncio.Queue()
+        self.results = []
+        
+        # Setup components
+        self._setup_logging()
+        self._setup_driver()
+        self._setup_ai_helper()
+        
+        self._page_semaphore = asyncio.Semaphore(concurrent_pages)
+        
         os.makedirs(output_dir, exist_ok=True)
 
         # Add progress tracking
@@ -64,7 +59,9 @@ class DocCrawler:
         logger.info(f"Initializing crawler for {base_url}")
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"Maximum pages to crawl: {max_pages}")
-        logger.info(f"Maximum concurrent pages: {max_concurrent_pages}")
+        logger.info(f"Concurrent pages: {concurrent_pages}")
+        logger.info(f"Using AI model: {model_type}")
+        logger.info(f"Using browser: {browser_type}")
 
     def __del__(self):
         """Clean up Selenium driver"""
@@ -227,7 +224,7 @@ class DocCrawler:
                 # Process content
                 try:
                     logger.info("Sending to GPT for formatting...")
-                    formatted_content = await self.gpt_helper.format_documentation(content)
+                    formatted_content = await self.ai_helper.format_documentation(content)
                     if formatted_content:
                         logger.info(f"Content formatting successful ({len(formatted_content)} characters)")
                         self.processed_content[url] = formatted_content
@@ -301,7 +298,7 @@ class DocCrawler:
 
             # Process up to max_concurrent_pages pages in parallel
             current_batch = []
-            while urls_to_visit and len(current_batch) < self.max_concurrent_pages:
+            while urls_to_visit and len(current_batch) < self.concurrent_pages:
                 url = urls_to_visit.pop()
                 if url not in self.visited_urls:
                     current_batch.append(url)
@@ -329,7 +326,7 @@ class DocCrawler:
                 current_content = f.read()
             
             # Perform the final review
-            reviewed_content = await self.gpt_helper.final_review(current_content)
+            reviewed_content = await self.ai_helper.final_review(current_content)
             
             # Save the reviewed documentation
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -338,3 +335,62 @@ class DocCrawler:
             logger.info("Final documentation review completed!")
 
         logger.info("Crawl completed!")
+
+    def _setup_ai_helper(self):
+        """Set up the appropriate AI helper based on model type."""
+        if self.model_type == "gpt":
+            self.ai_helper = GPTHelper()
+        else:
+            self.ai_helper = GeminiHelper(custom_prompt=self.custom_prompt)
+
+    def _setup_logging(self):
+        """Set up logging configuration."""
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+
+    def _setup_driver(self):
+        """Set up the Selenium WebDriver."""
+        # Initialize Selenium based on browser type
+        if self.browser_type == "chrome":
+            chrome_options = ChromeOptions()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--ignore-certificate-errors")
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-web-security")
+            chrome_options.add_argument("--allow-running-insecure-content")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+            self.driver = webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=chrome_options
+            )
+        else:  # firefox
+            # Install geckodriver if not present
+            #geckodriver_autoinstaller.install()
+            
+            firefox_options = FirefoxOptions()
+            firefox_options.add_argument("--headless")
+            firefox_options.add_argument("--width=1920")
+            firefox_options.add_argument("--height=1080")
+            firefox_options.add_argument("--disable-gpu")
+            firefox_options.add_argument("--no-sandbox")
+            firefox_options.add_argument("--disable-dev-shm-usage")
+            firefox_options.add_argument("--disable-extensions")
+            firefox_options.add_argument("--disable-web-security")
+            firefox_options.add_argument("--allow-running-insecure-content")
+            firefox_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0")
+
+            self.driver = webdriver.Firefox(
+                service=FirefoxService(),
+                options=firefox_options
+            )
+
+        # Set page load timeout
+        self.driver.set_page_load_timeout(90)
+
+        os.makedirs(self.output_dir, exist_ok=True)
