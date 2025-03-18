@@ -22,12 +22,19 @@ The `-e` flag installs the package in "editable" mode, which means:
 
 ### Environment Setup
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root with your API key(s):
+
+For OpenAI GPT:
 ```bash
-OPENAI_API_KEY=your_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-⚠️ The OpenAI API key is required for the crawler to process documentation.
+For Google Gemini:
+```bash
+GOOGLE_API_KEY=your_google_api_key_here
+```
+
+⚠️ At least one API key is required for the crawler to process documentation.
 
 ## Usage
 
@@ -43,10 +50,11 @@ python main.py https://docs.example.com
 - `-o, --output`: Output directory (default: output_docs)
 - `-m, --max-pages`: Maximum pages to scrape (default: 1000)
 - `-c, --concurrent`: Number of concurrent pages to scrape (default: 1)
+- `--model`: AI model to use for processing (default: "gpt", options: "gpt" or "gemini")
 
 Example with all options:
 ```bash
-python main.py https://docs.example.com -o my_docs -m 500 -c 2
+python main.py https://docs.example.com -o my_docs -m 500 -c 2 --model gemini
 ```
 
 ### Troubleshooting
@@ -63,8 +71,11 @@ The crawler accepts the following parameters:
 - `output_dir`: Directory where scraped docs will be saved
 - `max_pages`: Maximum number of pages to crawl
 - `max_concurrent_pages`: Number of concurrent pages to process
+- `model_type`: AI model to use ("gpt" or "gemini")
 
 ## Requirements
 
 - Python 3.8+
 - Chrome/Chromium browser (for Selenium)
+- OpenAI API key (for GPT model)
+- Google API key (for Gemini model)
